@@ -12,6 +12,45 @@ HEADER = {
     "Chrome/139.0.0.0 Safari/537.36"
 }
 
+def parseProduct(id: str, metadata: dict) -> dict:
+    return {
+        "ID" : id,
+        "Category" : "Product",
+        "Title" : metadata['name'],
+        "Description" : metadata['description'],
+        "Price" : float(metadata['offers']['price']),
+        "Currency" : metadata['offers']['priceCurrency'],
+        "Date" : metadata['offers']['validFrom'],
+        "Address" : metadata['offers']['availableAtOrFrom']['address']['streetAddress'],
+        "City" : metadata['offers']['availableAtOrFrom']['address']['addressLocality'],
+        "Country" : metadata['offers']['availableAtOrFrom']['address']['addressCountry'],
+        "Latitude": float(metadata['offers']['availableAtOrFrom']['latitude']),
+        "Longitude" : float(metadata['offers']['availableAtOrFrom']['longitude'])
+    }
+
+
+def parseMotorcycle(id: str, metadata: dict) -> dict:
+    return {
+        "ID" : id,
+        "Category": 'Motorcycle',
+        "Title" : metadata['name'],
+        "Description" : metadata['description'],
+        "Price" : float(metadata['offers']['price']),
+        "Currency" : metadata['offers']['priceCurrency'],
+        "Date" : metadata['offers']['validFrom'],
+        "Address" : metadata['offers']['availableAtOrFrom']['address']['streetAddress'],
+        "City" : metadata['offers']['availableAtOrFrom']['address']['addressLocality'],
+        "Country" : metadata['offers']['availableAtOrFrom']['address']['addressCountry'],
+        "Latitude": float(metadata['offers']['availableAtOrFrom']['latitude']),
+        "Longitude" : float(metadata['offers']['availableAtOrFrom']['longitude']),
+        "Brand" : metadata["brand"]["name"],
+        "Model" : metadata["model"],
+        "Year" : metadata["vehicleModelDate"],
+        "Odometer": metadata["mileageFromOdometer"]["value"],
+        "OdometerUnits" : metadata["mileageFromOdometer"]["unitCode"],
+    }
+
+
 def scrapeKijijiListing(url : str, id: str, kijiji_data) -> dict | None:
     '''
     ## Overview
@@ -25,6 +64,7 @@ def scrapeKijijiListing(url : str, id: str, kijiji_data) -> dict | None:
     # get the page
     listing_page = requests.Response()
     status_code = 429
+    time_asleep = 15
 
     while status_code == 429:
         listing_page = requests.get(url, headers=HEADER)
@@ -33,7 +73,8 @@ def scrapeKijijiListing(url : str, id: str, kijiji_data) -> dict | None:
 
         if status_code == 429:
             print("Putting thread to sleep...")
-            time.sleep(10)
+            time.sleep(time_asleep)
+            time_asleep += 15
         elif status_code != 200:
             print(f"Error: status code {status_code} - failed to retrieve listing at {url}")
             return
@@ -41,26 +82,24 @@ def scrapeKijijiListing(url : str, id: str, kijiji_data) -> dict | None:
             break
 
     listing_soup = BeautifulSoup(listing_page.text, features="html.parser")
-    
+
     # go through all the scripts and find the one with meta data
     listing_scripts = listing_soup.head.find_all_next("script", attrs={'type':'application/ld+json'})
     for listing_script in listing_scripts:
         try:
+            metadata = {}
             listing_json = json.loads(listing_script.text)
-            metadata = {
-                "Title" : listing_json['name'],
-                "Description" : listing_json['description'],
-                "Price" : float(listing_json['offers']['price']),
-                "Currency" : listing_json['offers']['priceCurrency'],
-                "Date" : listing_json['offers']['validFrom'],
-                "Address" : listing_json['offers']['availableAtOrFrom']['address']['streetAddress'],
-                "City" : listing_json['offers']['availableAtOrFrom']['address']['addressLocality'],
-                "Country" : listing_json['offers']['availableAtOrFrom']['address']['addressCountry'],
-                "Latitude": float(listing_json['offers']['availableAtOrFrom']['latitude']),
-                "Longitude": float(listing_json['offers']['availableAtOrFrom']['longitude'])
-            }
 
-            kijiji_data[id] = metadata
+            match listing_json["@type"]:
+                case "Product":
+                    metadata = parseProduct(id, listing_json)
+                case "Motorcycle":
+                    metadata = parseMotorcycle(id, listing_json)
+                case _:
+                    raise IndexError("@type missing")
+
+            kijiji_data[url] = metadata
+
             return
         except Exception as e:
             continue
@@ -86,11 +125,9 @@ def scrapeKijijiSearch(url : str) -> dict:
     with ThreadPoolExecutor() as pool:
         while not page_last:
             # get search page            
-            print(f"Parsing Page: {page_num}")
-
             status = 429
             srch_listings = requests.Response()
-
+            sleep_time = 15
             while (status == 429):
                 srch_page = requests.get(url.format(page_num), headers=HEADER)
                 srch_page.close()
@@ -98,7 +135,8 @@ def scrapeKijijiSearch(url : str) -> dict:
 
                 if status == 429:
                     print("Putting main thread to sleep")
-                    time.sleep(10)
+                    time.sleep(sleep_time)
+                    sleep_time += 15
                 elif srch_page.status_code != 200:
                     print(f"Error: unexpected status code at {url.format(page_num)}")
                     return data
@@ -120,7 +158,7 @@ def scrapeKijijiSearch(url : str) -> dict:
             result_count = [int(x) for x in result_count if x.isnumeric()]
 
             page_last = result_count[1] == result_count[2]
-
+            print(f"Parsing: {result_count[0]}-{result_count[1]} of {result_count[2]}")
 
             # get all listings on the page
             srch_listings = srch_soup.find_all("ul", attrs={"data-testid":"srp-search-list"})
@@ -151,8 +189,9 @@ def scrapeKijijiSearch(url : str) -> dict:
 
 
 if __name__ == '__main__':
-    CELL_URL = "https://www.kijiji.ca/b-cell-phone/alberta/page-{}/c760l9003?for-sale-by=ownr&view=list"
-    results = scrapeKijijiSearch(CELL_URL)
-
-    with open("data/kijiji_thread.json", "w") as f:
+    CELL_URL = "https://www.kijiji.ca/b-cell-phone/canada/page-{}/c760l0?for-sale-by=ownr&price=1__&view=list"
+    BIKE_URL = "https://www.kijiji.ca/b-sport-bikes/canada/page-{}/c304l0?for-sale-by=ownr&price=1__&view=list"
+    
+    results = scrapeKijijiSearch(BIKE_URL)
+    with open("data/kijiji_sport_bike.json", "w") as f:
         json.dump(results, f, indent=4)
