@@ -1,8 +1,9 @@
 import requests
 import json
 import time
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, PageElement
 from concurrent.futures import ThreadPoolExecutor
+
 
 # set to avoid issues with requests
 HEADER = {
@@ -11,6 +12,79 @@ HEADER = {
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/139.0.0.0 Safari/537.36"
 }
+
+
+def requestPage(url: str, sleep_msg: str) -> requests.Response | None:
+    '''
+    ## Overview
+    - Attempts to retrieve the requested page with linear back-off when too many request error comes up
+    - If the page status code is other than 429 or 200, it returns none and terminates the request
+
+    ## Args
+    - **url** : *str* - url of the search page for error reporting
+    - **sleep_msg** : *str* - custom message for when the request sleeps. Should be in form 'Alert: ...'
+
+    ## Return
+    - Returns the page if attained successfully, otherwise None
+    '''
+
+    status = 429
+    sleep_time = 15
+
+    while status == 429:
+        page = requests.get(url, headers=HEADER)
+        page.close()
+
+        status = page.status_code
+
+        if status == 429:
+            print(sleep_msg)
+            time.sleep(sleep_time)
+            sleep_time += 15
+
+        elif status != 200:
+            print(f"Error: status code {status} - failed to retrieve {url}")
+            return None
+
+        else:
+            return page
+
+
+def getSearchResultCount(soup: BeautifulSoup, url: str) -> bool | None:
+    '''
+    ## Overview
+    - This function takes in a search page and returns if the page is the last one
+    - On error the page returns a None value
+
+    ## Args
+    - **soup** : *BeautifulSoup* - search page with result count
+    - **url** : *str* - url of the search page for error reporting
+
+    ## Return
+    - Returns a bool value indicating last page, on error it returns None
+    '''
+
+    # 1. get the element containing search count
+    result_count = soup.find_all("h2", attrs={"data-testid":"srp-results"})
+
+    if len(result_count) != 2:
+        print(f"Error: search page format error at {url}")
+        return None
+    
+    # 2. extract all the numbers from the string
+    result_count = result_count[0].text.split()
+    result_count = [x.replace(",", "") for x in result_count]
+    result_count = [int(x) for x in result_count if x.isnumeric()]
+
+    # 3. check for issue and report
+    if len(result_count) != 3:
+        print(f"Error: failed to extract search result count at {url}")
+        return None
+
+    print(f"Parsing: {result_count[0]}-{result_count[1]} of {result_count[2]}")
+
+    return result_count[1] == result_count[2]
+
 
 def parseProduct(id: str, metadata: dict) -> dict:
     return {
@@ -51,72 +125,98 @@ def parseMotorcycle(id: str, metadata: dict) -> dict:
     }
 
 
-def scrapeKijijiListing(url : str, id: str, kijiji_data) -> dict | None:
+def scrapeKijijiListing(element: PageElement, kijiji_data: dict):
     '''
     ## Overview
-    This function scrapes the content of listings with prices. Listings without prices (swap/trade) or 
+    - This function scrapes the content of listings with prices. Listings without prices (swap/trade) or 
     (please contact) are not processed.
+
     ## Args
-    **url** : *str* - target listing page with price
+    - **element** : *PageElement* - listing card from search page
+    - **kijiji_data** : *dict* - dictionary of all url - metadata pairs
+
     ## Return
-    **dict** - returns a dictionary with meta data related to a listing
+    - It updates the content of **kijiji_data** if the parsing succeeds. Returns None.
     '''
-    # get the page
-    listing_page = requests.Response()
-    status_code = 429
-    time_asleep = 15
 
-    while status_code == 429:
-        listing_page = requests.get(url, headers=HEADER)
-        listing_page.close()
-        status_code = listing_page.status_code
+    # 1. parse the element tag for id and url
+    id = element.findAll(attrs={"data-testid" : "listing-card"})
+    url = element.findAll(attrs={"data-testid" : "listing-link"})
 
-        if status_code == 429:
-            print("Putting thread to sleep...")
-            time.sleep(time_asleep)
-            time_asleep += 15
-        elif status_code != 200:
-            print(f"Error: status code {status_code} - failed to retrieve listing at {url}")
-            return
-        else:
-            break
+    if len(id) < 1 or len(url) < 1:
+        print("Error: could not parse a listing on search page")
+        return
+
+    try:
+        id = id[0].attrs["data-listingid"]
+        url = url[0].attrs["href"]
+
+    except Exception:
+        print("Error: listing on search page missing attributes")
+        return
+
+    # 2. get the listing page
+    listing_page = requestPage(url, "Alert: Putting thread to sleep...")
+
+    if listing_page is None:
+        return
 
     listing_soup = BeautifulSoup(listing_page.text, features="html.parser")
 
-    # go through all the scripts and find the one with meta data
+    # 3. try to extract the meta-data within the script
     listing_scripts = listing_soup.head.find_all_next("script", attrs={'type':'application/ld+json'})
-    for listing_script in listing_scripts:
+
+    if (len(listing_scripts) != 0):
+        listing_script = listing_scripts[0]
+
         try:
-            metadata = {}
             listing_json = json.loads(listing_script.text)
 
             match listing_json["@type"]:
                 case "Product":
                     metadata = parseProduct(id, listing_json)
+
                 case "Motorcycle":
                     metadata = parseMotorcycle(id, listing_json)
+
                 case _:
-                    raise IndexError("@type missing")
+                    raise NameError("'@type' missing")
 
             kijiji_data[url] = metadata
-
             return
-        except Exception as e:
-            continue
+    
+    # --- error reporting and handling
+        except json.JSONDecodeError:
+            print(f"Error: script does not contain meta-data at {url}")
+            return
 
-    print(f"Error: failed to parse the content of page at {url}")
-    return
+        except NameError:
+            print(f"Error: unknown meta-data schema at {url}")
+            return
+
+        except KeyError:
+            print(f"Error: meta-data missing key at {url}")
+            return
+
+        except Exception:
+            print(f"Error: meta-data issue at {url}")
+            return
+    else:
+        print(f"Error: scripts missing at {url}")
     
 
 def scrapeKijijiSearch(url : str) -> dict:
     '''
     ## Overview
-    This function scrapes all the listings associated with a search query.
+    - This function scrapes all the listings associated with a search query.
+
     ## Args
-    **url** : *str* - must be a formatted string with brace as placeholder for page number
+    - **url** : *str* - must be a formatted string with brace as placeholder for page number
+
     ## Return
-    **dict** - returns a dictionary with format {listingID : metaData} where metaData is another dictionary
+    - **dict** - returns a dictionary with format {listingID : metaData} where metaData is another dictionary
     '''
+
     page_last = False
     listing_num = 1
     page_num = 1
@@ -124,74 +224,49 @@ def scrapeKijijiSearch(url : str) -> dict:
 
     with ThreadPoolExecutor() as pool:
         while not page_last:
-            # get search page            
-            status = 429
-            srch_listings = requests.Response()
-            sleep_time = 15
-            while (status == 429):
-                srch_page = requests.get(url.format(page_num), headers=HEADER)
-                srch_page.close()
-                status = srch_page.status_code
+            # 1. get search page
+            srch_page = requestPage(url.format(page_num), "Alert: putting main thread to sleep...")
 
-                if status == 429:
-                    print("Putting main thread to sleep")
-                    time.sleep(sleep_time)
-                    sleep_time += 15
-                elif srch_page.status_code != 200:
-                    print(f"Error: unexpected status code at {url.format(page_num)}")
-                    return data
-                else:
-                    break
+            if srch_page is None:
+                return data
 
             srch_soup = BeautifulSoup(srch_page.text, features="html.parser")
 
+            # 2. get search result count
+            page_last = getSearchResultCount(srch_soup, url.format(page_num))
 
-            # get the page count
-            result_count = srch_soup.find_all("h2", attrs={"data-testid":"srp-results"})
-
-            if len(result_count) != 2:
-                print(f"Error: missing listing count at {url.format(page_num)}")
+            if page_last is None:
                 return data
 
-            result_count = result_count[0].text.split()
-            result_count = [x.replace(",", "") for x in result_count]
-            result_count = [int(x) for x in result_count if x.isnumeric()]
-
-            page_last = result_count[1] == result_count[2]
-            print(f"Parsing: {result_count[0]}-{result_count[1]} of {result_count[2]}")
-
-            # get all listings on the page
+            # 3. get all listings on the page
             srch_listings = srch_soup.find_all("ul", attrs={"data-testid":"srp-search-list"})
 
-            if len(srch_listings) == 0:
-                print(f"Error: missing listing unoredered list at {url.format(page_num)}")
+            if len(srch_listings) < 1:
+                print(f"Error: missing listing unordered list at {url.format(page_num)}")
                 return data
             
             srch_listings = srch_listings[0]
 
-
+            # 4. process each listing using thread pool and save into data
             for srch_listing in srch_listings:
-                # get listing info
-                listing_id = srch_listing.findAll(attrs={"data-testid" : "listing-card"})[0] \
-                                .attrs["data-listingid"]
-
-                listing_link = srch_listing.findAll(attrs={"data-testid" : "listing-link"})[0] \
-                                .attrs["href"]
-                
-                pool.submit(scrapeKijijiListing, listing_link, listing_id, data)
-                
                 print(f"Parsing Listing: {listing_num}")
                 listing_num += 1
-
+                
+                pool.submit(scrapeKijijiListing, srch_listing, data)
+                
             page_num += 1
     
     return data
 
 
 if __name__ == '__main__':
+    # Example urls
     CELL_URL = "https://www.kijiji.ca/b-cell-phone/canada/page-{}/c760l0?for-sale-by=ownr&price=1__&view=list"
     BIKE_URL = "https://www.kijiji.ca/b-sport-bikes/canada/page-{}/c304l0?for-sale-by=ownr&price=1__&view=list"
-    
+
+
     results = scrapeKijijiSearch(BIKE_URL)
-    with open("data/kijiji_sport_bike.json", "w") as f:
+
+    # Save to file
+    with open("data/test3.json", "w") as f:
         json.dump(results, f, indent=4)
