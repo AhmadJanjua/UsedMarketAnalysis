@@ -1,18 +1,8 @@
-from bs4 import BeautifulSoup, PageElement
-from datetime import date, timedelta
-
-import requests
 import json
-import time
-
-
-# --- CONSTANTS
-_HEADER = {
-    "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/139.0.0.0 Safari/537.36"
-}
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, date
+from bs4 import BeautifulSoup, PageElement
+from scraperHelper import requestPage
 
 
 # --- DICTIONARY PARSERS
@@ -31,6 +21,7 @@ def _parseProduct(id: str, metadata: dict) -> dict:
         "Latitude": float(metadata['offers']['availableAtOrFrom']['latitude']),
         "Longitude" : float(metadata['offers']['availableAtOrFrom']['longitude'])
     }
+
 
 def _parseMotorcycle(id: str, metadata: dict) -> dict:
     return {
@@ -54,9 +45,30 @@ def _parseMotorcycle(id: str, metadata: dict) -> dict:
     }
 
 
-# --- HELPER METHODS
+# --- HELPER FUNCTIONS
+def generateName(suffix: str, number_days: int) -> str:
+    """
+    ## Overview
+    - this function generates a name containing the date and amount of data
 
-## -- General
+    ## Args
+    - **suffix** : *str* - a unique name for the file sent
+    - **number_days** : *int* - the number of days logged
+
+    ## Return
+    - Returns a string in the format day-month-year-quantity-suffix.json
+    
+    """
+    if number_days < 0:
+        content = '-all-'
+    elif number_days <= 1:
+        content = '-daily-'
+    else:
+        content = f"-{number_days}-"
+
+    return datetime.today().strftime("%d-%m-%Y") + content + suffix + ".json"
+
+
 def getValidDays(n: int):
     '''
     ## Overview
@@ -84,47 +96,6 @@ def getValidDays(n: int):
         days.add(cur_date.strftime("%Y-%m-%d"))
 
     return days
-
-
-def requestPage(url: str, sleep_msg: str) -> BeautifulSoup | None:
-    '''
-    ## Overview
-    - Attempts to retrieve the requested page with exponential back-off when too many request error comes up
-    - If the page status code is other than 429 or 200, it returns none and terminates the request
-    - After 7.5 min it terminates
-
-    ## Args
-    - **url** : *str* - url of the search page for error reporting
-    - **sleep_msg** : *str* - custom message for when the request sleeps. Should be in form 'Alert: ...'
-
-    ## Return
-    - Returns the page if attained successfully, otherwise None
-    '''
-
-    status = 429
-    sleep_time = 30
-
-    while status == 429:
-        page = requests.get(url, headers=_HEADER)
-        page.close()
-
-        status = page.status_code
-
-        if status == 429:
-            if sleep_time >= 480:
-                print(f"Error: requesting page timeout {url}")
-                return None
-
-            print(sleep_msg)
-            time.sleep(sleep_time)
-            sleep_time *= 2
-
-        elif status != 200:
-            print(f"Error: status code {status} - failed to retrieve {url}")
-            return None
-
-        else:
-            return BeautifulSoup(page.text, features="html.parser")
 
 
 ## -- Search Page
@@ -185,8 +156,9 @@ def getAllListings(soup: BeautifulSoup, url: str) -> PageElement | None:
         
     return listings[0]
 
+
 ## -- Listing Page
-def scrapeListing(element: PageElement) -> tuple[str, dict] | None:
+def scrapeListing(element: PageElement) -> dict | None:
     '''
     ## Overview
     - This function scrapes the content of listings with prices. Listings without prices (swap/trade) or 
@@ -240,8 +212,10 @@ def scrapeListing(element: PageElement) -> tuple[str, dict] | None:
 
                 case _:
                     raise NameError("'@type' missing")
+            
+            metadata['url'] = url
                 
-            return (url, metadata)
+            return metadata
     
         # --- error reporting
         except json.JSONDecodeError:
@@ -259,7 +233,7 @@ def scrapeListing(element: PageElement) -> tuple[str, dict] | None:
         print(f"Error: scripts missing at {url}")
 
 
-def addListingData(element: PageElement, DAYS: set, kijiji_data: dict):
+def addListingData(element: PageElement, DAYS: set, kijiji_data: list):
     '''
     ## Overview
     - Function validates the metadata then updates the kijiji data and returns if the date was found in the
@@ -268,26 +242,80 @@ def addListingData(element: PageElement, DAYS: set, kijiji_data: dict):
     ## Args
     - **element** : *PageElement* - listing card with url and id information
     - **DAYS** : *set* - set of valid dates or empty set if all dates are valid
-    - **kijiji_data** : *dict* - dictionary with data of parsed listings
+    - **kijiji_data** : *list* - list to populate with data of parsed listings
 
     ## Return
     - Returns bool value representing if the date was valid or not
     '''
 
-    result = scrapeListing(element)
+    metadata = scrapeListing(element)
 
-    if result is None: return True
-    
-    url, metadata = result
-    date = metadata["Date"]
+    if metadata is None:
+        return True
 
-    kijiji_data[url] = metadata
+    kijiji_data.append(metadata)
 
     if len(DAYS) == 0:
         return True
     
-    elif date in DAYS:
+    date = metadata["Date"]
+
+    if date in DAYS:
         return True
-    
     else:
         return False
+
+
+# -- MAIN FUNCTION
+def scrapeKijiji(url : str, limit_days: int = -1) -> dict:
+    '''
+    ## Overview
+    - This function scrapes all the listings associated with a search query up to the limit specified.
+
+    ## Args
+    - **url** : *str* - must be a formatted string with brace as placeholder for page number
+    - **limit_days** : *int* - positive integer representing the number of historical days to test.
+    Negative int represents no bound.
+
+    ## Return
+    - **dict** - returns a dictionary with format {listingID : metaData} where metaData is another dictionary
+    '''
+
+    page_last = False
+    page_num = 1
+    data = []
+    DAYS = getValidDays(limit_days)
+
+    with ThreadPoolExecutor() as pool:
+        while not page_last:
+            # 1. get search page
+            srch_soup = requestPage(url.format(page_num), "Alert: putting main thread to sleep...")
+
+            if srch_soup is None:
+                return data
+
+            # 2. get search result count
+            page_last = getSearchResultCount(srch_soup, url.format(page_num))
+
+            if page_last is None:
+                return data
+
+            # 3. get all listings on the page
+            srch_listings = getAllListings(srch_soup, url.format(page_num))
+
+            if srch_listings is None:
+                return data
+            
+            # 4. process each listing using thread pool and save into data
+            pool_futures = [pool.submit(addListingData, s, DAYS, data) for s in srch_listings]
+            results = [f.result() for f in pool_futures]
+
+            # Exit if the last 10 adds are beyond valid dates
+            if limit_days >= 0 and not any(results[-10:]):
+                break
+
+            page_num += 1
+
+        pool.shutdown(wait=True)
+
+    return data
