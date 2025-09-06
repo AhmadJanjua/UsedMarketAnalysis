@@ -1,3 +1,6 @@
+import os
+os.system(r"pip install beautifulsoup4")
+
 import json
 import sys
 from KijijiHelper import generateName, scrapeKijiji
@@ -5,11 +8,10 @@ from KijijiHelper import generateName, scrapeKijiji
 if __name__ == '__main__':
     if len(sys.argv) != 4:
         raise ValueError("Arguments should be 'cell'/'motorcycle' and number of days '0'")
-    
+
     category = sys.argv[1]
     number_days = int(sys.argv[2])
     storage = sys.argv[3]
-
 
     # urls
     CELL_URL = "https://www.kijiji.ca/b-cell-phone/canada/page-{}/c760l0?for-sale-by=ownr&price=1__&view=list"
