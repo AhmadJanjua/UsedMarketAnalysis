@@ -1,6 +1,7 @@
 from pyspark.sql import functions as F
 from delta.tables import DeltaTable as D
 from datetime import datetime
+import sys
 
 def get_daily_cell():
     """
@@ -97,4 +98,8 @@ def run_update(all: bool=False):
     print("Successfully updated the cell_listings")
 
 if __name__ == '__main__':
-    run_update(all=True)
+    if len(sys.argv) != 2:
+        raise ValueError("Error: failed to retrieve all arguments.")
+
+    run_all = bool(sys.argv[1])
+    run_update(run_all)
