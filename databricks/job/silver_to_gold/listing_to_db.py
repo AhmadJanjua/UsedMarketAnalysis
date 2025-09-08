@@ -3,6 +3,15 @@ from delta.tables import DeltaTable
 import sys
 
 def merge_listing(df):
+    """
+    Merge dataframe to listings table. Updates existing listings and appends new
+
+    ### Args
+    - df (pyspark.DataFrame): processed table of listings
+
+    ### Return
+    - None
+    """
     dt = DeltaTable.forName(spark, "webscraper.gold.listing")
     dt\
         .alias("l")\
@@ -11,7 +20,17 @@ def merge_listing(df):
         .whenNotMatchedInsertAll()\
         .execute()
 
-def merge_scd(table: str, df):  
+def merge_scd(table: str, df):
+    """
+    Merge function for slow changing dimension tables. On match, invalidates existing and appends new.
+
+    ### Args
+    - table (str): name of the table to merge into
+    - df (pyspark.DataFrame): table to merge into database
+
+    ### Return
+    - None
+    """
     timestamp = spark.sql("select current_timestamp() ts").collect()[0]["ts"]
     dt = DeltaTable\
         .forName(spark, table)\
@@ -38,12 +57,10 @@ def fmt_text(x):
     """
     Trims and makes whitespaces uniform.
 
-    Args:
-    ---
+    ### Args
     - x (Columnn): a column of strings to be formatted.
 
-    Return:
-    ---
+    ### Return
     - Returns the text with even spaces, no leading or trailing spaces.
     """
     return F.trim(F.regexp_replace(x, r"\s+", " "))
@@ -53,12 +70,10 @@ def norm_text(x):
     Normalizes the text with uniform spacing, and lower case ascii
     alphabet without special characters.
 
-    Args:
-    ---
+    ### Args
     - x (Column): column with text to be normalized
 
-    Return:
-    ---
+    # Return
     - Returns text completely normalized
     """
     l = F.lower(x)
@@ -72,29 +87,25 @@ def sha256(cols):
     """
     Converts each row into a sha256 hash using the specified columns
 
-    Args:
-    ---
+    ### Args
     - cols (list[str]): list of column names to be hashed
 
-    Return:
-    ---
+    ### Return
     - A hash of the columns provided
     """
     cols = [F.coalesce(F.col(c).try_cast("string"), F.lit("null")) for c in cols]
     return F.sha2(F.concat_ws("|",*cols), 256)
 
-def clean_listings(df):
+def clean_listings(df) -> tuple:
     '''
     This table describes what should be in other tables,
     first filter through this table and extract the remaining
     columns based on that.
 
-    Args:
-    ---
+    ### Args
     - df (pyspark.DataFrame): listings data to be filtered out for the main listing table.
 
-    Return:
-    ---
+    ### Return
     - Returns a tuple of dataframes. The first value is the dataframe that other tables will
     be made from, the second will be the listings dataframe.
     '''
@@ -114,6 +125,15 @@ def clean_listings(df):
     return og, listing 
 
 def clean_info(df):
+    """
+    Preprocesses the gold info table.
+
+    ### Args
+    - df (pyspark.DataFrame): table must include id, info column with title and description.
+
+    ### Return
+    - Processed info dataframe.
+    """
     return (
         df
         .select("id", "info.title", "info.description")
@@ -130,7 +150,17 @@ def clean_info(df):
     )
 
 def clean_location(df):
+    """
+    Preprocesses the location table. Extracts postal code.
+
+    ### Args
+    - df (pyspark.DataFrame): Dataframe with id, location(country, city, address, coordinates(lat, lon)).
+
+    ### Return
+    - Returns a processed dataframe.
+    """
     postal_regex = r"(?i)\b(([A-Z][0-9][A-Z])\s?([0-9][A-Z][0-9])?)\b"
+
     return (
         df
         # get subset
@@ -184,6 +214,15 @@ def clean_location(df):
     )
 
 def clean_cost(df):
+    """
+    Preprocesses the gold cost table.
+    
+    ### Args
+    - df (pyspark.DataFrame): Frame with id, cost(currency, price) columns.
+
+    ### Return
+    - Processed dataframe cleaned to be merged into the gold.cost table.
+    """
     return (
         df
         # collect subset
@@ -206,7 +245,19 @@ def clean_cost(df):
     )
 
 def clean_electronic_brand(df):
+    """
+    Reads the title and description and attempts to parse the cellphone brand and model.
+    
+    ### Args
+    - df (pyspark.DataFrame): Table with id, info(title, description)
+
+    ### Return
+    - Returns a table of id, brand, models as a result of data extraction
+    """
     def attach_brand(b_df):
+        """
+        This function attaches the brand
+        """
         brands = spark.table("webscraper.silver.cell_brands")
         b_df = b_df.crossJoin(brands)
 
@@ -234,6 +285,9 @@ def clean_electronic_brand(df):
         )
 
     def attach_model(m_df):
+        """
+        This function attaches the model based on the brand
+        """
         models = spark.table("webscraper.silver.cell_models")
         models = models.select("brand", "model", "pattern", "length")
         m_df = m_df.join(models, "brand", "inner")
@@ -281,6 +335,15 @@ def clean_electronic_brand(df):
     )
 
 def clean_storage(df):
+    """
+    This function reads the title and description and attempts to extract the storage from it.
+
+    ### Args
+    - df (pyspark.DataFrame): Requires table with id, info.title, info.description
+
+    ### Return
+    - Returns a table with storage dataframe.
+    """
     # 1. create patterns with varying level of priority
     storage_patterns = spark.createDataFrame([
         # most common phone storage (128-512)
@@ -341,6 +404,15 @@ def clean_storage(df):
     )
 
 def clean_vehicle_spec(df):
+    """
+    Preprocess the gold.vehicle_spec table.
+    
+    ### Args
+    - df (pyspark.DataFrame): Table containing model column with brand, name and year subcolumns
+
+    ### Return
+    - Preprocessed gold table with duplicates removed and constraints enforced.
+    """
     return (
         df
         .select("id", "model.brand", "model.name", "model.year")
@@ -355,6 +427,15 @@ def clean_vehicle_spec(df):
     )
 
 def clean_odometer(df):
+    """
+    Preprocesses the milage associated with vehicles
+
+    ### Args
+    - df (pyspark.DataFrame): table with id, odometer(unit, value)
+
+    ### Return
+    - Returns processed odometer data
+    """
     return (
         df
         .select("id","odometer.unit", "odometer.value")
@@ -369,6 +450,12 @@ def clean_odometer(df):
     )
 
 def cell_pipeline():
+    """
+    This function runs cell pipeline. Calls the functions in correcct order to update all tables and merge
+    into database.
+
+    Note: only runs the most recent changes.
+    """
     df = spark.table("webscraper.silver.cell_listings")
     latest = df.agg(F.max("processed_at").alias("x")).collect()[0]["x"]
     df = df.filter(F.col("processed_at") == latest)
@@ -390,6 +477,11 @@ def cell_pipeline():
     merge_scd("webscraper.gold.storage", storage_df)
 
 def moto_pipeline():
+    """
+    Orchestrates the motorcycle data retrieval, processing and merging into the database.
+    
+    Note: Only runs the most recent changes.
+    """
     df = spark.table("webscraper.silver.motorcycle_listings")
     latest = df.agg(F.max("processed_at").alias("x")).collect()[0]["x"]
     df = df.filter(F.col("processed_at") == latest)
