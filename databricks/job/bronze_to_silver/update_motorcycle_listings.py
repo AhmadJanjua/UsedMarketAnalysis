@@ -108,6 +108,6 @@ if __name__ == '__main__':
     if len(sys.argv) != 2:
         raise ValueError("Error: failed to retrieve all arguments.")
 
-    run_all = bool(sys.argv[1])
+    run_all = ("True" == sys.argv[1])
     run_update(run_all)
     

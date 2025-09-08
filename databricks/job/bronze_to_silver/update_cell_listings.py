@@ -83,12 +83,10 @@ def run_update(all: bool=False):
     if all:
         cell_df = spark.read.option("multiline", "true").json(LISTING_LOC + "*.json")
     else:
-        try:
-            cell_df = spark.read.option("multiline", "true").json(LISTING_LOC + get_daily_cell())
-        except:
-            print("Error: No file read!")
-            return
+        cell_df = spark.read.option("multiline", "true").json(LISTING_LOC + get_daily_cell())
+    
     tmp = preprocess(cell_df)
+    
     try:
         merge_to_db(tmp)
     except:
@@ -101,5 +99,5 @@ if __name__ == '__main__':
     if len(sys.argv) != 2:
         raise ValueError("Error: failed to retrieve all arguments.")
 
-    run_all = bool(sys.argv[1])
+    run_all = ("True" == sys.argv[1])
     run_update(run_all)
