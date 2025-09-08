@@ -122,7 +122,7 @@ def process_moto(df):
                 "model", "odometer", "date", "processed_at")
     )
 
-def update(file_dir: str, suffix: str, table: str, preprocess: function, on_all: bool=False):
+def update(file_dir: str, suffix: str, table: str, preprocess: callable, on_all: bool=False):
     """
     This function reads data, processes it, then merges it to the database.
 
