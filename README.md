@@ -1,7 +1,12 @@
 # UsedMarketAnalysis
-A production-style, daily automated ELT pipeline that monitors second-hand listing prices, detects changes with SCD2 history, and serves clean analytics tables to Tableau.
+A production-style, daily automated ELT pipeline that monitors second-hand listing prices, detects changes 
+with SCD2 history, and serves clean analytics tables to Tableau.
 
-### Details
+### Dashboards
+![alt text](docs/overview.png)
+![alt text](docs/cellphone.png)
+
+### Features
 - Created a lightweight, minimal intrusion webscraper (collects < 2k ads a day)
     - BeatuifulSoup +  requests + Multi-threading
 - Cleaned and transformed data for data integrity
@@ -13,16 +18,9 @@ A production-style, daily automated ELT pipeline that monitors second-hand listi
 
 ## Database Architecture
 ![medallion overview from drawio](docs/image-1.png)
-![catalog overview from databricks](docs/image-3.png)
 
 ## Pipeline Overview
-![pipeline image from databricks](docs/image.png)
 ![pipeline overview drawio](docs/image-2.png)
-
-## Sample Dashboards
-![alt text](docs/image-4.png)
-![alt text](docs/image-5.png)
-![alt text](docs/image-6.png)
 
 # Setup
 The project is set up using conda to manage environments and Python. To run, install conda and run this command:
